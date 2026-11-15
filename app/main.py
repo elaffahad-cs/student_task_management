@@ -2,8 +2,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from Supabase.client import supabase
 from app.tasks import router as tasks_router
+##from app.auth import router as auth_router
+from app.groups import router as groups_router
+from app.users import router as users_router
+from app.commitment import router as commitment_router
+from app.notifications import router as notifications_router
+from app.scheduler import router as scheduler_router
 
-app = FastAPI(title="Intelligent Student Task Management API", version="0.2.0")
+app = FastAPI(title="Intelligent Student Task Management API", version="0.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -13,8 +19,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ← the missing line that caused your earlier 404s
-app.include_router(tasks_router, prefix="/api/v1")
+for r in (
+    tasks_router,
+    ##auth_router,
+    groups_router,
+    users_router,
+    commitment_router,
+    notifications_router,
+    scheduler_router,
+):
+    app.include_router(r, prefix="/api/v1")
 
 
 @app.get("/")
