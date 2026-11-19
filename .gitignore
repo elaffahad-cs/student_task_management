@@ -4,3 +4,7 @@ __pycache__/
 venv/
 .venv/
 .pytest_cache/
+Taskmanager/.dart_tool/
+Taskmanager/build/
+Taskmanager/.flutter-plugins-dependencies
+Taskmanager/android/local.properties
