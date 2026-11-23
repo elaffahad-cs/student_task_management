@@ -1,12 +1,14 @@
 """
 Commitment router: calculates and stores a user's Commitment Index,
-and shows the scores of all members in a group.
+and shows the scores of all members in a group. Requires a valid Supabase JWT.
 """
-
+# ★ معدل: التحقق من التوكن + الخصوصية، وإصلاح الـ except المكسور
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from app.auth import get_current_user, AuthenticatedUser
+from app.access import is_group_member
 from ai.commitment_index import calculate_commitment_index
 from Supabase.client import supabase
 
@@ -54,9 +56,13 @@ def _compute_for_user(user_id: str):
 
 # ============================================================
 # USER SCORE → GET /api/v1/commitment/{user_id}
+# a user can only see their own score
 # ============================================================
 @router.get("/commitment/{user_id}")
-async def get_commitment(user_id: str):
+async def get_commitment(user_id: str, current: AuthenticatedUser = Depends(get_current_user)):
+    if user_id != current.user_id:
+        raise HTTPException(status_code=403, detail="You can only view your own score.")
+
     try:
         return _compute_for_user(user_id)
     except ValueError as e:
@@ -67,9 +73,13 @@ async def get_commitment(user_id: str):
 
 # ============================================================
 # GROUP SCORES → GET /api/v1/groups/{group_id}/commitment
+# only members of the group can see the board
 # ============================================================
 @router.get("/groups/{group_id}/commitment")
-async def get_group_commitment(group_id: str):
+async def get_group_commitment(group_id: str, current: AuthenticatedUser = Depends(get_current_user)):
+    if not is_group_member(group_id, current.user_id):
+        raise HTTPException(status_code=403, detail="You are not a member of this group.")
+
     try:
         members = (
             supabase.table("group_members")

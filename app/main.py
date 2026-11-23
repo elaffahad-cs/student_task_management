@@ -1,27 +1,28 @@
+# ★ معدل: إزالة auth_router المعلق، وتعطيل allow_credentials
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from Supabase.client import supabase
 from app.tasks import router as tasks_router
-##from app.auth import router as auth_router
 from app.groups import router as groups_router
 from app.users import router as users_router
 from app.commitment import router as commitment_router
 from app.notifications import router as notifications_router
 from app.scheduler import router as scheduler_router
 
-app = FastAPI(title="Intelligent Student Task Management API", version="0.3.0")
+app = FastAPI(title="Intelligent Student Task Management API", version="0.4.0")
 
+# For development the Flutter web app runs on localhost with a random port,
+# so allow all origins. Restrict this to your real domain before production.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,  # the app sends a Bearer token header, not cookies
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 for r in (
     tasks_router,
-    ##auth_router,
     groups_router,
     users_router,
     commitment_router,
