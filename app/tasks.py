@@ -1,5 +1,7 @@
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 
 """
 Tasks router: CRUD with authentication and ownership checks.
@@ -232,3 +234,21 @@ async def delete_task(task_id: str, current: AuthenticatedUser = Depends(get_cur
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# BREAKDOWN PREVIEW  →  POST /api/v1/tasks/breakdown
+# Returns suggested subtasks WITHOUT saving anything.
+# ============================================================
+class BreakdownRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: Optional[str] = None
+
+
+@router.post("/tasks/breakdown")
+async def preview_breakdown(
+    body: BreakdownRequest,
+    current: AuthenticatedUser = Depends(get_current_user),
+):
+    result = decompose_academic_task(body.title, body.description or "")
+    return result.model_dump()
