@@ -1,13 +1,15 @@
 """
 Groups router: create group, list my groups, list members, add member, leave group.
-Auth will be added later (user_id is passed as a query parameter, like tasks.py).
+All routes require a valid Supabase JWT.
 """
-
+# ★ معدل: التحقق من التوكن + العضوية + صلاحية الأدمن
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.auth import get_current_user, AuthenticatedUser
+from app.access import is_group_member, is_group_admin
 from Supabase.client import supabase
 
 router = APIRouter()
@@ -23,10 +25,10 @@ class MemberAdd(BaseModel):
 
 
 # ============================================================
-# CREATE GROUP → POST /api/v1/groups?user_id=...
+# CREATE GROUP → POST /api/v1/groups
 # ============================================================
 @router.post("/groups")
-async def create_group(body: GroupCreate, user_id: str):
+async def create_group(body: GroupCreate, current: AuthenticatedUser = Depends(get_current_user)):
     try:
         group_id = str(uuid.uuid4())
 
@@ -36,7 +38,7 @@ async def create_group(body: GroupCreate, user_id: str):
                 "id": group_id,
                 "name": body.name,
                 "description": body.description,
-                "created_by": user_id,
+                "created_by": current.user_id,
             })
             .execute()
         )
@@ -47,7 +49,7 @@ async def create_group(body: GroupCreate, user_id: str):
         supabase.table("group_members").insert({
             "id": str(uuid.uuid4()),
             "group_id": group_id,
-            "user_id": user_id,
+            "user_id": current.user_id,
             "role": "admin",
         }).execute()
 
@@ -60,15 +62,15 @@ async def create_group(body: GroupCreate, user_id: str):
 
 
 # ============================================================
-# MY GROUPS → GET /api/v1/groups?user_id=...
+# MY GROUPS → GET /api/v1/groups
 # ============================================================
 @router.get("/groups")
-async def list_my_groups(user_id: str):
+async def list_my_groups(current: AuthenticatedUser = Depends(get_current_user)):
     try:
         result = (
             supabase.table("group_members")
             .select("role, groups(*)")
-            .eq("user_id", user_id)
+            .eq("user_id", current.user_id)
             .execute()
         )
         groups = [
@@ -84,9 +86,13 @@ async def list_my_groups(user_id: str):
 
 # ============================================================
 # GROUP MEMBERS → GET /api/v1/groups/{group_id}/members
+# only members of the group can see its members
 # ============================================================
 @router.get("/groups/{group_id}/members")
-async def list_members(group_id: str):
+async def list_members(group_id: str, current: AuthenticatedUser = Depends(get_current_user)):
+    if not is_group_member(group_id, current.user_id):
+        raise HTTPException(status_code=403, detail="You are not a member of this group.")
+
     try:
         result = (
             supabase.table("group_members")
@@ -102,9 +108,17 @@ async def list_members(group_id: str):
 
 # ============================================================
 # ADD MEMBER → POST /api/v1/groups/{group_id}/members
+# only an admin of the group can add members
 # ============================================================
 @router.post("/groups/{group_id}/members")
-async def add_member(group_id: str, body: MemberAdd):
+async def add_member(
+    group_id: str,
+    body: MemberAdd,
+    current: AuthenticatedUser = Depends(get_current_user),
+):
+    if not is_group_admin(group_id, current.user_id):
+        raise HTTPException(status_code=403, detail="Only a group admin can add members.")
+
     try:
         existing = (
             supabase.table("group_members")
@@ -136,9 +150,18 @@ async def add_member(group_id: str, body: MemberAdd):
 
 # ============================================================
 # LEAVE GROUP → DELETE /api/v1/groups/{group_id}/members/{user_id}
+# a user can remove themselves; an admin can remove other members
 # ============================================================
 @router.delete("/groups/{group_id}/members/{user_id}")
-async def leave_group(group_id: str, user_id: str):
+async def leave_group(
+    group_id: str,
+    user_id: str,
+    current: AuthenticatedUser = Depends(get_current_user),
+):
+    is_self = user_id == current.user_id
+    if not (is_self or is_group_admin(group_id, current.user_id)):
+        raise HTTPException(status_code=403, detail="You can only remove yourself from a group.")
+
     try:
         result = (
             supabase.table("group_members")

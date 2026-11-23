@@ -1,64 +1,113 @@
--- Intelligent Student Task Management System: database schema
--- Run in Supabase: SQL Editor -> New query -> paste -> Run
+"""
+Scheduler router: endpoints that QStash calls on a schedule.
 
-create table if not exists profiles (
-    id uuid primary key default gen_random_uuid(),
-    full_name text not null,
-    email text unique not null,
-    commitment_index_score float default 0,
-    last_activity timestamptz default now(),
-    created_at timestamptz default now()
-);
+QStash setup (Upstash console -> QStash -> Schedules):
+  - URL:  https://<your-deployed-backend>/api/v1/scheduler/check-inactivity   (e.g. every 6 hours)
+  - URL:  https://<your-deployed-backend>/api/v1/scheduler/deadline-reminders  (e.g. every hour)
+  - Method: POST
+  - Header: Upstash-Forward-x-scheduler-secret: <same value as SCHEDULER_SECRET in .env>
 
-create table if not exists groups (
-    id uuid primary key default gen_random_uuid(),
-    name text not null,
-    description text,
-    created_by uuid references profiles(id) on delete set null,
-    created_at timestamptz default now()
-);
+QStash cannot call localhost, so the backend must be deployed first.
+"""
 
-create table if not exists group_members (
-    id uuid primary key default gen_random_uuid(),
-    group_id uuid not null references groups(id) on delete cascade,
-    user_id uuid not null references profiles(id) on delete cascade,
-    role text not null default 'member',
-    joined_at timestamptz default now(),
-    unique (group_id, user_id)
-);
+import os
+from datetime import datetime, timedelta, timezone
 
-create table if not exists tasks (
-    id uuid primary key default gen_random_uuid(),
-    user_id uuid not null references profiles(id) on delete cascade,
-    group_id uuid references groups(id) on delete set null,
-    title text not null,
-    description text,
-    subject_name text,
-    deadline timestamptz,
-    subject_importance numeric,
-    complexity numeric,
-    priority_level numeric,
-    status text not null default 'pending',
-    created_at timestamptz default now()
-);
+from fastapi import APIRouter, Header, HTTPException
 
-create table if not exists subtasks (
-    id uuid primary key default gen_random_uuid(),
-    task_id uuid not null references tasks(id) on delete cascade,
-    title text not null,
-    estimated_hours numeric,
-    is_completed boolean not null default false
-);
+from ai.inactivity_alert import check_inactivity
+from Supabase.client import supabase
 
-create table if not exists notifications (
-    id uuid primary key default gen_random_uuid(),
-    user_id uuid not null references profiles(id) on delete cascade,
-    message text not null,
-    type text,
-    is_read boolean not null default false,
-    created_at timestamptz default now()
-);
+router = APIRouter()
 
-create index if not exists idx_tasks_user on tasks(user_id);
-create index if not exists idx_subtasks_task on subtasks(task_id);
-create index if not exists idx_members_user on group_members(user_id);
+
+def _verify(secret: str | None):
+    expected = os.environ.get("SCHEDULER_SECRET")
+    if not expected:
+        raise HTTPException(status_code=500, detail="SCHEDULER_SECRET is not set.")
+    if secret != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized.")
+
+
+def _already_sent(user_id: str, type_: str, since: datetime, message: str | None = None) -> bool:
+    query = (
+        supabase.table("notifications")
+        .select("id")
+        .eq("user_id", user_id)
+        .eq("type", type_)
+        .gte("created_at", since.isoformat())
+    )
+    if message:
+        query = query.eq("message", message)
+    return bool(query.limit(1).execute().data)
+
+
+# ============================================================
+# INACTIVITY → POST /api/v1/scheduler/check-inactivity
+# ============================================================
+@router.post("/scheduler/check-inactivity")
+async def run_inactivity_check(x_scheduler_secret: str | None = Header(default=None)):
+    _verify(x_scheduler_secret)
+    try:
+        profiles = supabase.table("profiles").select("id, last_activity").execute().data
+        since = datetime.now(timezone.utc) - timedelta(hours=24)
+        sent = 0
+
+        for p in profiles:
+            if not p.get("last_activity"):
+                continue
+            result = check_inactivity(p["last_activity"])
+            # result.severity is 'warning' or 'critical', both allowed by notifications_type_check
+            if result.should_alert and not _already_sent(p["id"], result.severity, since):
+                supabase.table("notifications").insert({
+                    "user_id": p["id"],
+                    "title": "Inactivity alert",
+                    "message": result.message,
+                    "type": result.severity,
+                }).execute()
+                sent += 1
+
+        return {"checked": len(profiles), "alerts_sent": sent}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# DEADLINES → POST /api/v1/scheduler/deadline-reminders
+# ============================================================
+@router.post("/scheduler/deadline-reminders")
+async def run_deadline_reminders(x_scheduler_secret: str | None = Header(default=None)):
+    _verify(x_scheduler_secret)
+    try:
+        now = datetime.now(timezone.utc)
+        soon = now + timedelta(hours=24)
+
+        tasks = (
+            supabase.table("tasks")
+            .select("id, user_id, title, deadline, status")
+            .neq("status", "completed")
+            .gte("deadline", now.isoformat())
+            .lte("deadline", soon.isoformat())
+            .execute()
+            .data
+        )
+
+        sent = 0
+        for t in tasks:
+            message = f"Reminder: '{t['title']}' is due within 24 hours."
+            if not _already_sent(t["user_id"], "deadline", now - timedelta(hours=24), message):
+                supabase.table("notifications").insert({
+                    "user_id": t["user_id"],
+                    "title": "Deadline reminder",
+                    "message": message,
+                    "type": "deadline",
+                }).execute()
+                sent += 1
+
+        return {"tasks_due_soon": len(tasks), "reminders_sent": sent}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
